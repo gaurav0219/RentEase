@@ -1,0 +1,336 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ========================
+// ENUMS
+// ========================
+
+enum UserRole {
+  OWNER
+  TENANT
+}
+
+enum PropertyType {
+  APARTMENT
+  HOUSE
+  VILLA
+  COMMERCIAL
+}
+
+enum RoomStatus {
+  AVAILABLE
+  OCCUPIED
+  MAINTENANCE
+  RESERVED
+}
+
+enum FurnishingType {
+  FURNISHED
+  SEMI_FURNISHED
+  UNFURNISHED
+}
+
+enum DocumentType {
+  AADHAAR
+  PAN
+  PHOTO
+  ADDRESS_PROOF
+  OTHER
+}
+
+enum TenantStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  ACTIVE
+  INACTIVE
+}
+
+enum AgreementStatus {
+  DRAFT
+  PENDING_SIGNATURE
+  ACTIVE
+  EXPIRED
+  TERMINATED
+}
+
+enum NotificationType {
+  EMAIL
+  SMS
+  WHATSAPP
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  WITHDRAWN
+}
+
+// ========================
+// MODELS
+// ========================
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  phone         String?   @unique
+  password      String
+  firstName     String
+  lastName      String
+  role          UserRole
+  isActive      Boolean   @default(true)
+  emailVerified Boolean   @default(false)
+  phoneVerified Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastLoginAt   DateTime?
+
+  // Relations
+  properties    Property[]  @relation("PropertyOwner")
+  tenant        Tenant?
+  auditLogs     AuditLog[]
+  notifications Notification[]
+  settings      UserSettings?
+
+  @@index([email])
+  @@index([phone])
+}
+
+model UserSettings {
+  id                        String   @id @default(uuid())
+  emailRentReminders        Boolean  @default(true)
+  emailAgreementUpdates     Boolean  @default(true)
+  emailTenantApplications   Boolean  @default(true)
+  emailDocumentVerification Boolean  @default(false)
+  smsNotifications          Boolean  @default(false)
+  whatsappNotifications     Boolean  @default(false)
+  language                  String   @default("en")
+  dateFormat                String   @default("dd/mm/yyyy")
+  theme                     String   @default("dark")
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  // Relations
+  userId                    String   @unique
+  user                      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Property {
+  id          String       @id @default(uuid())
+  name        String
+  type        PropertyType
+  address     String
+  city        String
+  state       String
+  pincode     String
+  landmark    String?
+  description String?
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  // Relations
+  ownerId     String
+  owner       User         @relation("PropertyOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  rooms       Room[]
+
+  @@index([ownerId])
+  @@index([city, state])
+}
+
+model Room {
+  id               String         @id @default(uuid())
+  roomNumber       String
+  floor            Int            @default(0)
+  description      String?
+  rentAmount       Decimal        @db.Decimal(10, 2)
+  securityDeposit  Decimal        @db.Decimal(10, 2)
+  maintenanceCharge Decimal?      @db.Decimal(10, 2)
+  furnishing       FurnishingType @default(UNFURNISHED)
+  status           RoomStatus     @default(AVAILABLE)
+  amenities        String[]       @default([])
+  isActive         Boolean        @default(true)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  // Relations
+  propertyId       String
+  property         Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  currentTenantId  String?        @unique
+  currentTenant    Tenant?        @relation("CurrentRoom", fields: [currentTenantId], references: [id])
+  agreements       Agreement[]
+  applications     TenantApplication[]
+
+  @@unique([propertyId, roomNumber])
+  @@index([propertyId])
+  @@index([status])
+}
+
+model Tenant {
+  id                String       @id @default(uuid())
+  fatherName        String?
+  motherName        String?
+  dateOfBirth       DateTime?
+  permanentAddress  String?
+  profession        String?
+  companyName       String?
+  emergencyContact  String?
+  emergencyContactName String?
+  numberOfOccupants Int          @default(1)
+  status            TenantStatus @default(PENDING)
+  approvedAt        DateTime?
+  rejectedAt        DateTime?
+  rejectionReason   String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  // Relations
+  userId            String       @unique
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents         Document[]
+  currentRoom       Room?        @relation("CurrentRoom")
+  agreements        Agreement[]
+  applications      TenantApplication[]
+
+  @@index([status])
+}
+
+model TenantApplication {
+  id          String            @id @default(uuid())
+  message     String?           // Optional message from tenant
+  status      ApplicationStatus @default(PENDING)
+  reviewedAt  DateTime?
+  reviewNotes String?           // Notes from landlord
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  // Relations
+  tenantId    String
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roomId      String
+  room        Room              @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, roomId]) // Tenant can only apply once per room
+  @@index([tenantId])
+  @@index([roomId])
+  @@index([status])
+}
+
+model Document {
+  id            String       @id @default(uuid())
+  type          DocumentType
+  fileName      String
+  originalName  String
+  mimeType      String
+  size          Int
+  path          String
+  isVerified    Boolean      @default(false)
+  verifiedAt    DateTime?
+  maskedData    String?      // For storing masked Aadhaar numbers etc.
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  // Relations
+  tenantId      String
+  tenant        Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([type])
+}
+
+model Agreement {
+  id                  String          @id @default(uuid())
+  agreementNumber     String          @unique
+  status              AgreementStatus @default(DRAFT)
+  
+  // Agreement Dates
+  startDate           DateTime
+  endDate             DateTime
+  signedDate          DateTime?
+  
+  // Financial Terms
+  monthlyRent         Decimal         @db.Decimal(10, 2)
+  securityDeposit     Decimal         @db.Decimal(10, 2)
+  maintenanceCharge   Decimal?        @db.Decimal(10, 2)
+  rentDueDay          Int             @default(1)  // Day of month rent is due
+  
+  // Terms and Conditions
+  lockInPeriodMonths  Int             @default(6)
+  noticePeriodDays    Int             @default(30)
+  rentEscalation      Decimal?        @db.Decimal(5, 2)  // Annual % increase
+  
+  // Clauses (JSON for flexibility)
+  additionalClauses   Json?
+  stateSpecificClauses Json?
+  
+  // Jurisdiction
+  jurisdiction        String          // District/City for legal jurisdiction
+  
+  // Document
+  pdfPath             String?
+  templateVersion     String          @default("1.0")
+  
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  // Relations
+  tenantId            String
+  tenant              Tenant          @relation(fields: [tenantId], references: [id])
+  roomId              String
+  room                Room            @relation(fields: [roomId], references: [id])
+
+  @@index([tenantId])
+  @@index([roomId])
+  @@index([status])
+  @@index([startDate, endDate])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  action      String   // LOGIN, LOGOUT, CREATE, UPDATE, DELETE, etc.
+  entityType  String   // User, Property, Room, Agreement, etc.
+  entityId    String?
+  details     Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  // Relations
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([entityType])
+  @@index([createdAt])
+}
+
+model Notification {
+  id          String           @id @default(uuid())
+  type        NotificationType
+  subject     String
+  message     String
+  isRead      Boolean          @default(false)
+  readAt      DateTime?
+  sentAt      DateTime?
+  isSent      Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+
+  // Relations
+  userId      String
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+}
